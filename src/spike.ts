@@ -1,5 +1,14 @@
-/** Phase 1 spike: search -> detail -> invoice -> x402 pay -> poll -> print code.
- *  usage: npx tsx src/spike.ts "starbucks" 5 US [--dry] */
+/**
+ * Phase 1 spike: buy one gift card end to end.
+ *   search -> detail -> create invoice -> pay via x402 -> poll -> print redemption
+ *
+ * usage: npm run spike -- <term> <value> <country> [--dry]
+ *   npm run spike -- starbucks 5 US --dry   # stops before paying ($0.005 in fees)
+ *
+ * Picks the first in-stock hit and the package exactly matching <value>. Refuses if that
+ * package doesn't exist, or the price is over HARD_CAP_USDC or the wallet balance.
+ */
+import { setTimeout as sleep } from "node:timers/promises";
 import { call, nextStep, priceUsd, usdcBalance, address, HARD_CAP_USDC } from "./bitrefill.js";
 
 const args = process.argv.slice(2).filter(a => !a.startsWith("--"));
@@ -25,11 +34,9 @@ const main = async () => {
   console.log(`   packages: ${packages.map(p => p.package_value).join(", ")} ${packages[0]?.package_currency ?? ""}`);
   if (d.recipient_required) console.log(`   ! recipient_required (${d.recipient_type})`);
 
-  // exact string from the API -- a wrong package_value is a 500 on create
-  const chosen =
-    packages.find(p => p.package_value === String(wantValue)) ??
-    packages.filter(p => Number(p.package_value) <= HARD_CAP_USDC).sort((a, b) => +a.package_value - +b.package_value)[0];
-  if (!chosen) throw new Error(`no package <= $${HARD_CAP_USDC}; saw ${packages.map(p => p.package_value).join(", ")}`);
+  // package_value must be the API's exact string; a mismatch is a 500 on create
+  const chosen = packages.find(p => p.package_value === String(wantValue));
+  if (!chosen) throw new Error(`REFUSED: no $${wantValue} package; available: ${packages.map(p => p.package_value).join(", ")}`);
   console.log(`   -> ${d.id} @ ${chosen.package_value}\n`);
 
   console.log(`3. create invoice`);
@@ -50,12 +57,13 @@ const main = async () => {
   if (DRY) return console.log(`--dry: stopping before paying $${price}`);
 
   console.log(`4. pay $${price} USDC`);
-  // cap == invoice price: a 402 asking for anything else throws before signing
+  // cap = exact invoice price, so a 402 asking for any more throws before signing
   const paid = await call(
     nextStep(created.json, { url: "/x402/invoice/pay", method: "POST", body: { invoice_id: inv.invoice_id }, capUsdc: price }),
   );
   console.log(`   -> https://basescan.org/tx/${paid.txHash}\n`);
 
+  // each status poll is a paid call ($0.001); 40 x 5s covers ~3 min
   console.log(`5. poll delivery`);
   for (let i = 0; i < 40; i++) {
     const { json: st } = await call({ url: `/x402/invoice/status?invoice_id=${inv.invoice_id}` });
@@ -65,9 +73,9 @@ const main = async () => {
       for (const o of st.redemption_info?.orders ?? []) console.log(JSON.stringify(o.redemption_info ?? o, null, 2));
       return;
     }
-    await new Promise(r => setTimeout(r, 5000));
+    await sleep(5000);
   }
-  console.log(`\nundelivered after ~3min. invoice ${inv.invoice_id} -- escalate after 3h.`);
+  console.log(`\nundelivered after ~3min. invoice ${inv.invoice_id}: escalate to Bitrefill support after 3h.`);
 };
 
 main().catch(e => { console.error(`\nFAILED: ${e.message}`); process.exit(1); });
