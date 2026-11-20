@@ -74,7 +74,7 @@ const redact = (v: unknown): unknown =>
     ),
   );
 
-const log = (event: string, data: unknown) => {
+export const log = (event: string, data: unknown) => {
   const line = { t: new Date().toISOString(), event, data: redact(data) };
   appendFileSync(LOG, JSON.stringify(line) + "\n");
   console.log(`  · ${event}`, JSON.stringify(line.data).slice(0, 220));

@@ -5,6 +5,7 @@
 import assert from "node:assert";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { payingFetch, nextStep, priceUsd, HARD_CAP_USDC } from "./bitrefill.js";
+import { Session, handlers, type Quote } from "./agent.js";
 
 const URL_ = "https://api.bitrefill.com/x402/gift-cards/search?q=starbucks&country=US";
 const PAYEE = "0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A";
@@ -73,6 +74,42 @@ const main = async () => {
   assert.equal(priceUsd({ price_usdc: "25000000", price_usd: 25 }), 25);
   assert.equal(priceUsd({ price_usdc: "5000000" }), 5);
   console.log("6. atomic price_usdc reads back as dollars  ✓");
+
+  // 7. confirmation gate: only a plain yes, immediately after the quote, confirms
+  const quote = (s: Session, id: string, priceUsd: number, expiresAt = Date.now() + 60_000) => {
+    s.quotes.set(id, { invoiceId: id, product: "X", value: "5", currency: "USD", priceUsd, expiresAt, created: {} } as Quote);
+    s.pending = id;
+  };
+  const t7 = new Session(15);
+  quote(t7, "inv1", 5.04);
+  t7.userSaid("Yes.");
+  assert.equal(t7.confirmed, "inv1");
+  for (const said of ["yes but make it $10", "no", "what about amazon?"]) {
+    quote(t7, "inv1", 5.04);
+    t7.userSaid(said);
+    assert.equal(t7.confirmed, undefined, `"${said}" must not confirm`);
+  }
+  quote(t7, "inv1", 5.04);
+  t7.userSaid("hmm");
+  t7.userSaid("yes"); // yes one message too late: quote no longer pending
+  assert.equal(t7.confirmed, undefined);
+  console.log("7. only an immediate plain yes confirms a quote  ✓");
+
+  // 8. purchase refuses before any network call: unconfirmed, expired, over budget, unknown
+  const pay = (s: Session, id: string) => handlers.purchase(s, { invoice_id: id }) as Promise<any>;
+  const t8 = new Session(15);
+  quote(t8, "a", 5.04);
+  assert.match((await pay(t8, "a")).refused, /not confirmed/);
+  quote(t8, "b", 5.04, Date.now() - 1);
+  t8.userSaid("yes");
+  assert.match((await pay(t8, "b")).refused, /expired/);
+  const t8b = new Session(5);
+  quote(t8b, "c", 5.04);
+  t8b.userSaid("yes");
+  assert.match((await pay(t8b, "c")).refused, /over budget/);
+  assert.match((await pay(t8b, "zzz")).refused, /unknown invoice/);
+  assert.equal(t8.spentUsd + t8b.spentUsd, 0, "refusals must not touch the budget");
+  console.log("8. purchase refuses unconfirmed / expired / over-budget / unknown, budget untouched  ✓");
 
   console.log("\nall checks passed -- no funds moved");
 };
