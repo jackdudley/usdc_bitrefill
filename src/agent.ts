@@ -370,7 +370,7 @@ const TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: "send_gift",
     description:
-      "Email a purchased card's redemption link/code to someone, with the user's note. Only after purchase. recipient_email must be an address the user gave; message is their note (empty string if none).",
+      "Email a purchased card's redemption link/code to someone, with the user's note. Only after purchase. recipient_email must be an address the user said or typed, or a saved contact's email; message is their note (empty string if none).",
     input_schema: strictObject({
       invoice_id: { type: "string" },
       recipient_email: { type: "string" },
@@ -381,7 +381,7 @@ const TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: "check_funds",
     description:
-      "Read the wallet's live USDC balance on Base, plus the session spend limit, what's left of it, and the per-card cap. Use when the user asks what they can afford or how much is left.",
+      "Read the wallet's live USDC balance on Base, plus the session spend limit, what's left of it, and the per-card max. Use when the user asks what they can afford or how much is left.",
     input_schema: strictObject({}),
     strict: true,
   },
