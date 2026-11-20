@@ -236,9 +236,9 @@ export const handlers: Record<string, Handler> = {
       await handlers.check_order(s, { invoice_id });
       if (!p.redemption?.length) return { refused: "card not delivered yet; try again in a minute" };
     }
-    await sendEmail(to, p, String(message ?? "").slice(0, 500), test);
+    const emailId = await sendEmail(to, p, String(message ?? "").slice(0, 500), test);
     p.sentTo = to;
-    log("gift_sent", { invoice_id, to, test });
+    log("gift_sent", { invoice_id, to, test, emailId }); // emailId: look it up under Emails in the Resend dashboard
     return { sent: true, to, test, note: test ? "Test email: tell the user no real card was sent." : undefined };
   },
 };
@@ -263,7 +263,7 @@ const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;
 
 /** Email the redemption link/code via Resend. Without a verified domain, Resend's test sender
  *  only delivers to the Resend account's own address. */
-async function sendEmail(to: string, p: Payment, note: string, test: boolean) {
+async function sendEmail(to: string, p: Payment, note: string, test: boolean): Promise<string> {
   const items = (p.redemption ?? []) as any[];
   const lines = test
     ? ["This is a test. No real gift card was bought."]
@@ -291,6 +291,7 @@ async function sendEmail(to: string, p: Payment, note: string, test: boolean) {
     }),
   });
   if (!r.ok) throw new Error(`email failed (${r.status}): ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()).id;
 }
 
 const strictObject = (properties: Record<string, unknown>) => ({
