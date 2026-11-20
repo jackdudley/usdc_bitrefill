@@ -32,9 +32,32 @@ export default function Home() {
   const audio = useRef<HTMLAudioElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
 
+  const [wallet, setWallet] = useState<{ usdc: number; basescan: string } | null>(null);
+  const [editingLimit, setEditingLimit] = useState(false);
+  const [limitDraft, setLimitDraft] = useState("");
+
+  const refreshWallet = () =>
+    fetch("/api/wallet")
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => j && setWallet(j))
+      .catch(() => {});
+
   useEffect(() => {
     fetch("/api/chat").then(r => r.json()).then(j => setView(j.state)).catch(() => setError("Can't reach the server."));
+    refreshWallet();
+    const t = setInterval(refreshWallet, 20_000);
+    return () => clearInterval(t);
   }, []);
+
+  async function saveLimit(e: React.FormEvent) {
+    e.preventDefault();
+    const r = await fetch("/api/budget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ budgetUsd: Number(limitDraft) }) });
+    const j = await r.json();
+    if (!r.ok) return setError(j.error ?? "Couldn't change the limit.");
+    setError("");
+    setView(j.state);
+    setEditingLimit(false);
+  }
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [view?.transcript.length, stage]);
@@ -94,6 +117,7 @@ export default function Home() {
     } catch (e: any) {
       setError(e.message);
     }
+    refreshWallet();
     busyRef.current = false;
     if (reply) {
       setStage("speaking");
@@ -224,7 +248,45 @@ export default function Home() {
             <div className="h-2 overflow-hidden rounded-full bg-line" role="meter" aria-valuemin={0} aria-valuemax={view.budgetUsd} aria-valuenow={view.remainingUsd}>
               <div className="h-full rounded-full bg-mint transition-[width] duration-500" style={{ width: `${100 - spentPct}%` }} />
             </div>
-            <p className="mt-1 text-xs text-muted">Max {usd(view.hardCapUsd)} per card</p>
+            <div className="mt-1 flex items-baseline justify-between gap-2 text-xs text-muted">
+              <span>Max {usd(view.hardCapUsd)} per card</span>
+              {editingLimit ? (
+                <form onSubmit={saveLimit} className="flex items-center gap-1">
+                  <label className="sr-only" htmlFor="limit">Spend limit in dollars</label>$
+                  <input
+                    id="limit"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    value={limitDraft}
+                    onChange={e => setLimitDraft(e.target.value)}
+                    autoFocus
+                    className="w-16 rounded bg-surface px-1.5 py-0.5 text-ink tabular-nums ring-1 ring-line focus:outline-none focus:ring-2 focus:ring-cobalt"
+                  />
+                  <button type="submit" className="font-medium text-cobalt focus-visible:outline-2 focus-visible:outline-cobalt">Save</button>
+                </form>
+              ) : (
+                <button
+                  onClick={() => {
+                    setLimitDraft(String(view.budgetUsd));
+                    setEditingLimit(true);
+                  }}
+                  className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-cobalt"
+                >
+                  Edit limit
+                </button>
+              )}
+            </div>
+            {wallet && (
+              <p className="mt-2 text-xs text-muted">
+                Wallet{" "}
+                <a href={wallet.basescan} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-ink">
+                  <span className="font-medium tabular-nums text-ink">{wallet.usdc.toFixed(2)} USDC</span> on Base
+                </a>
+                , live from the chain
+              </p>
+            )}
           </div>
         )}
       </header>
@@ -360,6 +422,33 @@ export default function Home() {
               ))}
             </ul>
           )}
+          {view && view.fees.count > 0 && (
+            <section className="mt-10" aria-labelledby="fees-h">
+              <h2 id="fees-h" className="font-semibold">Paid API calls</h2>
+              <p className="mt-1 text-sm text-muted">
+                The agent pays Bitrefill per request over x402: {view.fees.count} calls,{" "}
+                <span className="tabular-nums">${view.fees.totalUsd.toFixed(3)}</span> USDC so far.
+              </p>
+              <ul className="mt-2 space-y-1 text-sm">
+                {view.fees.recent.map(f => (
+                  <li key={f.txHash} className="flex justify-between gap-2">
+                    <a
+                      href={`https://basescan.org/tx/${f.txHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="truncate text-muted underline underline-offset-2 hover:text-ink"
+                    >
+                      {ROUTE_LABEL[f.route] ?? f.route}
+                    </a>
+                    <span className="tabular-nums">${f.usd.toFixed(3)}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-muted">
+                Claude usage: <span className="tabular-nums">{usd(view.ai.spentUsd)}</span> of {usd(view.ai.budgetUsd)}
+              </p>
+            </section>
+          )}
           <Contacts />
         </aside>
       </div>
@@ -437,6 +526,13 @@ function Contacts() {
     </section>
   );
 }
+
+const ROUTE_LABEL: Record<string, string> = {
+  "/x402/gift-cards/search": "Search",
+  "/x402/products/detail": "Product details",
+  "/x402/invoice/create": "Quote",
+  "/x402/invoice/status": "Order status",
+};
 
 const STATUS: Record<string, string> = {
   all_delivered: "Delivered",

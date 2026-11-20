@@ -1,12 +1,10 @@
-import { Session, send } from "../../../src/agent";
+import { send } from "../../../src/agent";
+import { session } from "../../../src/server-session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ponytail: one in-memory session per server process (single-user demo). Reloading the page keeps
-// the budget; restarting the server resets it. Per-visitor sessions need auth, which is out of scope.
-const g = globalThis as unknown as { session?: Session; busy?: boolean };
-const session = () => (g.session ??= new Session());
+const g = globalThis as unknown as { busy?: boolean };
 
 export async function GET() {
   return Response.json({ state: session().view() });

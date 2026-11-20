@@ -114,8 +114,20 @@ export async function call<T = any>({ url, method = "GET", body, capUsdc = MICRO
   const txHash = header ? decodePaymentResponseHeader(header).transaction : undefined;
   log("response", { status: res.status, txHash, json });
   if (txHash) console.log(`  $ paid (cap ${capUsdc} USDC) -> https://basescan.org/tx/${txHash}`);
+  const route = new URL(full).pathname;
+  if (txHash && route in FEE_USD) feeLog.push({ at: new Date().toISOString(), route, usd: FEE_USD[route], txHash });
   return { json, txHash };
 }
+
+/** Every per-request x402 fee this process paid (card payments are tracked by the agent). */
+export const feeLog: { at: string; route: string; usd: number; txHash: string }[] = [];
+// ponytail: Bitrefill's documented per-route fees; the x402 settle header doesn't carry the amount
+const FEE_USD: Record<string, number> = {
+  "/x402/gift-cards/search": 0.002,
+  "/x402/invoice/create": 0.002,
+  "/x402/products/detail": 0.001,
+  "/x402/invoice/status": 0.001,
+};
 
 /**
  * Next request after `json`: take the URL from Bitrefill's next_step, but keep our own

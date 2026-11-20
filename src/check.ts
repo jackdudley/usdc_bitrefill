@@ -155,6 +155,17 @@ const main = async () => {
   assert.ok(!allowedRecipient(t11, "alex2@example.com"), "removed contact no longer allowed");
   console.log("11. contacts are allowed gift recipients; add/replace/remove validated  ✓");
 
+  // 12. human-set spend limit: validated, and lowering it below what's spent blocks purchases
+  const t12 = new Session(15);
+  for (const bad of [-1, NaN, 1e9]) assert.throws(() => t12.setBudget(bad), /limit between/);
+  quote(t12, "s", 5.04);
+  t12.userSaid("yes");
+  t12.setBudget(4);
+  assert.match((await pay(t12, "s")).refused, /over budget/);
+  t12.spentUsd = 6;
+  assert.equal(t12.remainingUsd, 0, "remaining never goes negative");
+  console.log("12. UI spend limit validated; lowering it blocks a confirmed purchase  ✓");
+
   console.log("\nall checks passed -- no funds moved");
 };
 main().catch(e => { console.error("CHECK FAILED:", e.message); process.exit(1); });

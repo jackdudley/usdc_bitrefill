@@ -11,7 +11,7 @@
  * - every payment is logged (product, amount, tx hash, Basescan link) to the session and logs/.
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { call, nextStep, priceUsd, log, HARD_CAP_USDC } from "./bitrefill";
+import { call, nextStep, priceUsd, log, usdcBalance, feeLog, HARD_CAP_USDC } from "./bitrefill";
 import { EMAIL, loadContacts } from "./contacts";
 
 const MODEL = "claude-opus-5-5";
@@ -61,7 +61,14 @@ export class Session {
   constructor(public budgetUsd = Number(process.env.SESSION_BUDGET_USD) || 15) {}
 
   get remainingUsd() {
-    return this.budgetUsd - this.spentUsd;
+    return Math.max(0, this.budgetUsd - this.spentUsd);
+  }
+
+  /** Spend limit set by the human in the UI. The agent has no tool to change it. */
+  setBudget(usd: number) {
+    if (!Number.isFinite(usd) || usd < 0 || usd > MAX_BUDGET_USD)
+      throw new Error(`Set a limit between $0 and $${MAX_BUDGET_USD}.`);
+    this.budgetUsd = Math.round(usd * 100) / 100;
   }
 
   /** Called with every user message before the model sees it. */
@@ -82,9 +89,14 @@ export class Session {
       pending: q ? { product: q.product, value: q.value, currency: q.currency, priceUsd: q.priceUsd } : null,
       payments: this.payments,
       transcript: this.transcript,
+      fees: { count: feeLog.length, totalUsd: feeLog.reduce((t, f) => t + f.usd, 0), recent: feeLog.slice(-6).reverse() },
+      ai: { spentUsd: this.aiSpentUsd, budgetUsd: this.aiBudgetUsd },
     };
   }
 }
+
+/** Highest spend limit the UI may set; the wallet balance and per-card cap still apply. */
+const MAX_BUDGET_USD = 100;
 
 export type SessionView = ReturnType<Session["view"]>;
 
@@ -159,6 +171,9 @@ export const handlers: Record<string, Handler> = {
     if (Date.now() > q.expiresAt) return { refused: "quote expired; get a new one" };
     if (q.priceUsd > Math.min(s.remainingUsd, HARD_CAP_USDC))
       return { refused: `over budget: $${s.remainingUsd.toFixed(2)} left` };
+    // read the chain, not our own bookkeeping: the wallet must actually hold the USDC
+    const walletUsd = await usdcBalance();
+    if (q.priceUsd > walletUsd) return { refused: `wallet holds only ${walletUsd.toFixed(2)} USDC on Base` };
 
     // Consume the yes and reserve the budget before paying: one yes pays at most once,
     // and a payment that errors after settling still counts against the budget.
@@ -214,6 +229,15 @@ export const handlers: Record<string, Handler> = {
     payment.status = st.delivery_status;
     payment.redemption = st.redemption;
     return { paid: payment, ...st };
+  },
+
+  async check_funds(s) {
+    return {
+      wallet_usdc_on_base: Number((await usdcBalance()).toFixed(4)),
+      session_limit_usd: s.budgetUsd,
+      session_remaining_usd: Number(s.remainingUsd.toFixed(2)),
+      per_card_cap_usd: HARD_CAP_USDC,
+    };
   },
 
   async check_order(s, { invoice_id }) {
@@ -334,6 +358,13 @@ const TOOLS: Anthropic.Beta.BetaTool[] = [
       recipient_email: { type: "string" },
       message: { type: "string" },
     }),
+    strict: true,
+  },
+  {
+    name: "check_funds",
+    description:
+      "Read the wallet's live USDC balance on Base, plus the session spend limit, what's left of it, and the per-card cap. Use when the user asks what they can afford or how much is left.",
+    input_schema: strictObject({}),
     strict: true,
   },
   {
