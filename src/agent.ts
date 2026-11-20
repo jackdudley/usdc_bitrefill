@@ -37,6 +37,8 @@ export type Payment = {
   /** Bitrefill delivery_status, updated by purchase/check_order. */
   status?: string;
   redemption?: unknown[];
+  /** Email address the card was sent to, if gifted. */
+  sentTo?: string;
 };
 
 export class Session {
@@ -215,7 +217,75 @@ export const handlers: Record<string, Handler> = {
     if (p) Object.assign(p, { status: st.delivery_status, redemption: st.redemption });
     return st;
   },
+
+  async send_gift(s, { invoice_id, recipient_email, message }) {
+    const p = s.payments.find(p => p.invoiceId === invoice_id);
+    if (!p) return { refused: "no purchase with that invoice; buy the card first" };
+    const to = String(recipient_email).trim().toLowerCase();
+    if (!EMAIL.test(to)) return { refused: "that isn't a valid email address" };
+    // the code is bearer money: only send it to an address the user actually said
+    if (!userGaveEmail(s, to)) return { refused: "the user never gave that address; ask them for it" };
+
+    const test = p.status === "dry_run";
+    if (!test && !p.redemption?.length) {
+      await handlers.check_order(s, { invoice_id });
+      if (!p.redemption?.length) return { refused: "card not delivered yet; try again in a minute" };
+    }
+    await sendEmail(to, p, String(message ?? "").slice(0, 500), test);
+    p.sentTo = to;
+    log("gift_sent", { invoice_id, to, test });
+    return { sent: true, to, test, note: test ? "Test email: tell the user no real card was sent." : undefined };
+  },
 };
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** True if `email` is one of the words the user said or typed ("alex at gmail dot com" counts). */
+export const userGaveEmail = (s: Session, email: string) =>
+  s.transcript.some(
+    m =>
+      m.role === "user" &&
+      m.text
+        .toLowerCase()
+        .replace(/\s+at\s+/g, "@")
+        .replace(/\s+dot\s+/g, ".")
+        .split(/\s+/)
+        .some(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "") === email),
+  );
+
+const esc = (t: string) => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+/** Email the redemption link/code via Resend. Without a verified domain, Resend's test sender
+ *  only delivers to the Resend account's own address. */
+async function sendEmail(to: string, p: Payment, note: string, test: boolean) {
+  const items = (p.redemption ?? []) as any[];
+  const lines = test
+    ? ["This is a test. No real gift card was bought."]
+    : items.flatMap(r => [
+        r.link && `Open your gift card: ${r.link}`,
+        r.code && `Code: ${r.code}`,
+        r.pin && `PIN: ${r.pin}`,
+        r.instructions,
+      ]).filter(Boolean);
+  const text = [note && `"${note}"`, `You've got a ${p.product} gift card.`, ...lines].filter(Boolean).join("\n\n");
+  const html = text
+    .split("\n\n")
+    .map(par => `<p>${esc(par).replace(/(https:\/\/\S+)/g, '<a href="$1">$1</a>')}</p>`)
+    .join("");
+
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY ?? ""}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from: process.env.RESEND_FROM || "Gift agent <onboarding@resend.dev>",
+      to: [to],
+      subject: `${test ? "[TEST] " : ""}You've got a ${p.product} gift card`,
+      text,
+      html,
+    }),
+  });
+  if (!r.ok) throw new Error(`email failed (${r.status}): ${(await r.text()).slice(0, 200)}`);
+}
 
 const strictObject = (properties: Record<string, unknown>) => ({
   type: "object" as const,
@@ -249,6 +319,17 @@ const TOOLS: Anthropic.Beta.BetaTool[] = [
     strict: true,
   },
   {
+    name: "send_gift",
+    description:
+      "Email a purchased card's redemption link/code to someone, with the user's note. Only after purchase. recipient_email must be an address the user gave; message is their note (empty string if none).",
+    input_schema: strictObject({
+      invoice_id: { type: "string" },
+      recipient_email: { type: "string" },
+      message: { type: "string" },
+    }),
+    strict: true,
+  },
+  {
     name: "check_order",
     description: "Delivery status of a paid invoice, with the redemption code/link once delivered.",
     input_schema: strictObject({ invoice_id: { type: "string" } }),
@@ -259,7 +340,7 @@ const TOOLS: Anthropic.Beta.BetaTool[] = [
 // Token rails, enforced in code. The prompt keeps the agent on topic; these bound the cost
 // when it isn't.
 const MAX_INPUT_CHARS = 300; // spoken requests are short; longer is paste/abuse
-const MAX_STEPS = 6; // model calls per user turn (search, quote, purchase fit easily)
+const MAX_STEPS = 6; // model calls per user turn (search, quote, purchase, send_gift fit easily)
 const MAX_REPLY_TOKENS = 2048; // thinking + a one-or-two sentence reply
 // ponytail: Opus 5.5 list prices; fallback-model turns priced the same, close enough for a cap
 const costUsd = (u: Anthropic.Beta.BetaUsage) =>
@@ -277,6 +358,7 @@ Only call purchase after the user says yes to that quote. The tool enforces this
 A quote can only be confirmed by the user's very next message. If they say anything else, it's dead: call get_quote again before asking for a yes.
 If a request is over budget or a value doesn't exist, say so and offer the closest option.
 After delivery, read back the redemption code or say the link is ready.
+Gifts: if the user wants the card sent to someone, include the email address in the quote question ("Should I buy it and email it to alex@example.com?"). After purchase returns paid, call send_gift with that address and their note, then confirm it was sent. Spoken addresses like "alex at gmail dot com" mean alex@gmail.com.
 Session budget: $${s.budgetUsd}; per-purchase hard cap: $${HARD_CAP_USDC}.`;
 
 let _client: Anthropic | undefined;

@@ -382,6 +382,7 @@ function Order({ p }: { p: Payment }) {
       <p className={delivered ? "text-mint" : p.status === "dry_run" ? "text-amber" : "text-muted"}>
         {STATUS[p.status ?? ""] ?? p.status ?? "Paid, checking delivery"}
       </p>
+      {p.sentTo && <p className="text-muted">Emailed to {p.sentTo}</p>}
       {(p.redemption as any[] | undefined)?.map((r, i) => (
         <div key={i} className="mt-1">
           {r.link && (

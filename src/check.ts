@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { payingFetch, nextStep, priceUsd, HARD_CAP_USDC } from "./bitrefill";
-import { Session, handlers, send, type Quote } from "./agent";
+import { Session, handlers, send, userGaveEmail, type Quote } from "./agent";
 
 const URL_ = "https://api.bitrefill.com/x402/gift-cards/search?q=starbucks&country=US";
 const PAYEE = "0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A";
@@ -123,6 +123,21 @@ const main = async () => {
   assert.match(await send(t9, "buy me a $5 starbucks card"), /AI allowance/);
   assert.equal(t9.messages.length, 0, "nothing was sent to Claude");
   console.log("9. long input and spent AI allowance refused before calling Claude  ✓");
+
+  // 10. gift emails only go to an address the user said, for a card that was bought
+  const t10 = new Session(15);
+  t10.transcript.push({ role: "user", text: "buy a $5 starbucks card and send it to Alex at Gmail dot com, thanks" });
+  t10.transcript.push({ role: "user", text: "also cc sam@example.org." });
+  assert.ok(userGaveEmail(t10, "alex@gmail.com"), "spoken address counts");
+  assert.ok(userGaveEmail(t10, "sam@example.org"), "typed address with trailing period counts");
+  assert.ok(!userGaveEmail(t10, "attacker@evil.com"));
+  assert.ok(!userGaveEmail(t10, "am@example.org"), "substring of a given address doesn't count");
+  t10.payments.push({ at: "", product: "X", amountUsd: 5, invoiceId: "p1", txHash: "DRY_RUN", basescan: "", status: "dry_run" });
+  const gift = (id: string, to: string) => handlers.send_gift(t10, { invoice_id: id, recipient_email: to, message: "" }) as Promise<any>;
+  assert.match((await gift("nope", "alex@gmail.com")).refused, /buy the card first/);
+  assert.match((await gift("p1", "not-an-email")).refused, /valid email/);
+  assert.match((await gift("p1", "attacker@evil.com")).refused, /never gave/);
+  console.log("10. gift email only to an address the user gave, only for a bought card  ✓");
 
   console.log("\nall checks passed -- no funds moved");
 };
