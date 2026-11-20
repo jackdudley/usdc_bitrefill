@@ -138,6 +138,21 @@ export const handlers: Record<string, Handler> = {
     s.confirmed = undefined;
     s.spentUsd += q.priceUsd;
 
+    if (process.env.DRY_RUN) {
+      // test mode: every gate above ran for real; the invoice is left unpaid and expires
+      const payment: Payment = {
+        at: new Date().toISOString(),
+        product: `${q.product} ${q.value} ${q.currency}`,
+        amountUsd: q.priceUsd,
+        invoiceId: invoice_id,
+        txHash: "DRY_RUN",
+        basescan: "",
+      };
+      s.payments.push(payment);
+      log("payment", { ...payment, dryRun: true });
+      return { dry_run: true, paid: payment, note: "DRY RUN: nothing was paid. Tell the user this was a test purchase." };
+    }
+
     let txHash: string | undefined;
     try {
       ({ txHash } = await call(
@@ -214,6 +229,7 @@ const system = (s: Session) =>
   `You are a voice assistant that buys gift cards with USDC. Replies are spoken aloud: short, plain sentences, no markdown, no long IDs or URLs unless asked.
 Flow: search_products, then get_quote. After a quote, say the product and total price and ask "Should I buy it?". Then stop and wait.
 Only call purchase after the user says yes to that quote. The tool enforces this; never claim a purchase happened unless purchase returned "paid".
+A quote can only be confirmed by the user's very next message. If they say anything else, it's dead: call get_quote again before asking for a yes.
 If a request is over budget or a value doesn't exist, say so and offer the closest option.
 After delivery, read back the redemption code or say the link is ready.
 Session budget: $${s.budgetUsd}; per-purchase hard cap: $${HARD_CAP_USDC}.`;

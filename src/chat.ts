@@ -1,12 +1,14 @@
 /**
  * Phase 2 terminal chat with the gift-card agent. Real money: purchases pay USDC on Base.
  * usage: npm run chat            (budget from SESSION_BUDGET_USD, default $15)
+ *        DRY_RUN=1 npm run chat  (every check runs, stops before paying for the card)
  */
 import readline from "node:readline/promises";
 import { Session, send } from "./agent.js";
 
 const s = new Session();
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+if (process.env.DRY_RUN) console.log("DRY RUN: purchases stop before paying (fees only)");
 console.log(`budget $${s.budgetUsd}. Try: "buy me a $5 Starbucks card". Ctrl-C to quit.`);
 
 let shown = 0;
