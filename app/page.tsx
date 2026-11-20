@@ -19,7 +19,9 @@ export default function Home() {
   useEffect(() => {
     fetch("/api/chat").then(r => r.json()).then(j => setView(j.state)).catch(() => setError("Can't reach the server."));
   }, []);
-  useEffect(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }), [view?.transcript.length, stage]);
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [view?.transcript.length, stage]);
 
   async function speak(text: string) {
     audio.current?.pause();
