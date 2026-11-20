@@ -14,16 +14,6 @@ Built for the University Blockchain Conference 2026, Agentic Payments and AI tra
 
 A real $5 Starbucks gift card bought by this code on Base mainnet: [payment on Basescan](https://basescan.org/tx/0x132fc3b5f2b2fcc76ab1962ad842ec5ad46d2020e4c853079e13c529d0199e4c). The card was delivered about 5 seconds after payment.
 
-## How it meets the track
-
-| Track objective | Here |
-|---|---|
-| Agents that pay for APIs per request (x402) | Every Bitrefill call (search, product details, quote, order status) is paid with an x402 USDC micro-payment, $0.001 to $0.002 each. The page lists them with Basescan links. |
-| Spending controls and guardrails | Human-set session limit and per-card max under a hard ceiling, on-chain balance check, per-call fee cap, Claude spend cap. See [Safety limits](#safety-limits). |
-| Human approval for transactions | Every purchase needs a spoken or clicked "yes" to the exact quoted price, checked in code. |
-| Allowlists | One API host (api.bitrefill.com), one network (Base), and gift emails only to addresses you said or saved as contacts. |
-| LLMs that read and act on the blockchain safely | The agent reads its wallet's live USDC balance (`check_funds`, and before every payment) and executes payments on Base, inside the limits above. |
-
 ## Architecture
 
 ```mermaid
