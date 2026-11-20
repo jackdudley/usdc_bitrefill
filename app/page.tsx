@@ -2,7 +2,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionView, Payment } from "../src/agent";
 
-type Stage = "idle" | "listening" | "transcribing" | "thinking";
+type Stage = "idle" | "listening" | "transcribing" | "thinking" | "speaking";
+
+// Hands-free turn detection. Calibration knobs: raise VOICE_RMS if background noise sets it
+// off, lower it if it misses a quiet voice. END_SILENCE_MS is the pause that ends your turn.
+const VOICE_RMS = 0.03;
+const END_SILENCE_MS = 1200;
+const MAX_TURN_MS = 20_000;
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
 /** Empty WAV, played during a tap to unlock audio. */
@@ -15,6 +21,12 @@ export default function Home() {
   const [error, setError] = useState("");
   const [voiceOff, setVoiceOff] = useState(false);
   const [replyBlocked, setReplyBlocked] = useState(false);
+  const [live, setLive] = useState(false); // hands-free conversation on
+  const [hearing, setHearing] = useState(false); // voice detected in the current turn
+  const liveRef = useRef(false); // same as `live`, readable from async callbacks
+  const busyRef = useRef(false);
+  const discard = useRef(false); // set when a recording is cancelled, not finished
+  const mic = useRef<{ stream: MediaStream; ctx: AudioContext; analyser: AnalyserNode } | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
@@ -43,51 +55,129 @@ export default function Home() {
       if (a.src.startsWith("blob:")) URL.revokeObjectURL(a.src);
       a.src = URL.createObjectURL(await r.blob());
       setVoiceOff(false);
-      await a.play().then(() => setReplyBlocked(false), () => setReplyBlocked(true));
+      try {
+        await a.play();
+      } catch {
+        return setReplyBlocked(true);
+      }
+      setReplyBlocked(false);
+      // resolve when the reply finishes (or is stopped), so listening resumes after it
+      await new Promise(done => {
+        a.onended = a.onerror = a.onpause = () => done(null);
+      });
     } catch {
       setVoiceOff(true);
     }
   }
 
+  /** One user turn, spoken or typed: send it, show and speak the reply, then listen again. */
   async function submit(text: string) {
     text = text.trim();
-    if (!text || stage === "thinking") return;
+    if (!text || busyRef.current) return;
+    busyRef.current = true; // only while waiting on the server; a click can cut off a spoken reply
+    cancelListening();
     unlockAudio();
+    audio.current?.pause();
     setReplyBlocked(false);
     setError("");
     setDraft("");
     setStage("thinking");
     setView(v => v && { ...v, pending: null, transcript: [...v.transcript, { role: "user", text }] });
+    let reply = "";
     try {
       const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
       const j = await r.json();
       if (j.state) setView(j.state);
       if (!r.ok) throw new Error(j.error ?? `Request failed (${r.status}).`);
-      speak(j.reply);
+      reply = j.reply;
     } catch (e: any) {
       setError(e.message);
-    } finally {
-      setStage("idle");
     }
+    busyRef.current = false;
+    if (reply) {
+      setStage("speaking");
+      await speak(reply);
+    }
+    if (busyRef.current) return; // a newer turn started while this reply was playing
+    setStage("idle");
+    if (liveRef.current) listen();
   }
 
-  async function toggleMic() {
-    if (stage === "listening") return recorder.current?.stop();
-    if (stage !== "idle") return;
+  async function startConversation() {
     unlockAudio();
-    audio.current?.pause();
     setError("");
-    let stream: MediaStream;
+    const ctx = new AudioContext(); // created during the tap so it isn't suspended
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      mic.current = { stream, ctx, analyser };
     } catch {
+      ctx.close();
       return setError("Microphone blocked. Allow it in the browser, or type below.");
     }
-    const rec = new MediaRecorder(stream);
+    liveRef.current = true;
+    setLive(true);
+    listen();
+  }
+
+  function stopConversation() {
+    liveRef.current = false;
+    setLive(false);
+    cancelListening();
+    audio.current?.pause();
+    mic.current?.stream.getTracks().forEach(t => t.stop());
+    mic.current?.ctx.close();
+    mic.current = null;
+  }
+
+  function cancelListening() {
+    if (recorder.current?.state === "recording") {
+      discard.current = true;
+      recorder.current.stop();
+    }
+    setStage(s => (s === "listening" ? "idle" : s));
+  }
+
+  /** Record until the user has spoken and then paused; silence alone is never sent. */
+  function listen() {
+    const m = mic.current;
+    if (!m || !liveRef.current || busyRef.current) return;
+    const rec = new MediaRecorder(m.stream);
     const chunks: Blob[] = [];
+    const buf = new Float32Array(m.analyser.fftSize);
+    const startedAt = performance.now();
+    let spokeAt = 0;
+    let lastVoice = 0;
+
+    const timer = setInterval(() => {
+      if (rec.state !== "recording") return clearInterval(timer);
+      m.analyser.getFloatTimeDomainData(buf);
+      const rms = Math.sqrt(buf.reduce((sum, x) => sum + x * x, 0) / buf.length);
+      const now = performance.now();
+      if (rms > VOICE_RMS) {
+        lastVoice = now;
+        if (!spokeAt) {
+          spokeAt = now;
+          setHearing(true);
+        }
+      }
+      const turnOver = spokeAt > 0 && (now - lastVoice > END_SILENCE_MS || now - spokeAt > MAX_TURN_MS);
+      const quietTooLong = !spokeAt && now - startedAt > 30_000; // restart so recordings stay small
+      if (turnOver || quietTooLong) rec.stop();
+    }, 50);
+
     rec.ondataavailable = e => chunks.push(e.data);
     rec.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
+      clearInterval(timer);
+      setHearing(false);
+      if (discard.current) {
+        discard.current = false;
+        return;
+      }
+      if (!liveRef.current) return;
+      if (!spokeAt) return listen();
       setStage("transcribing");
       try {
         const fd = new FormData();
@@ -95,11 +185,12 @@ export default function Home() {
         const r = await fetch("/api/stt", { method: "POST", body: fd });
         const j = await r.json();
         if (!r.ok) throw new Error(j.error);
-        if (!j.text?.trim()) throw new Error("Didn't catch that. Try again, or type below.");
+        if (j.text?.trim()) return submit(j.text);
         setStage("idle");
-        await submit(j.text);
+        listen(); // only noise; keep listening
       } catch (e: any) {
         setError(e.message || "Speech-to-text failed. Type your request instead.");
+        stopConversation();
         setStage("idle");
       }
     };
@@ -108,7 +199,7 @@ export default function Home() {
     setStage("listening");
   }
 
-  const busy = stage !== "idle" && stage !== "listening";
+  const busy = stage === "transcribing" || stage === "thinking";
   const spentPct = view ? Math.min(100, (view.spentUsd / view.budgetUsd) * 100) : 0;
 
   return (
@@ -142,7 +233,7 @@ export default function Home() {
           <ol className="flex-1 space-y-3" aria-live="polite">
             {view?.transcript.length === 0 && (
               <li className="pt-10 text-muted">
-                Tap the mic and say something like <q className="text-ink">Get me a $5 Starbucks card.</q>
+                Tap the mic once, then just talk. Try <q className="text-ink">Get me a $5 Starbucks card.</q>
               </li>
             )}
             {view?.transcript.map((m, i) => (
@@ -158,15 +249,21 @@ export default function Home() {
                 </p>
               </li>
             ))}
-            {stage !== "idle" && (
+            {stage !== "idle" && stage !== "speaking" && (
               <li className="text-sm text-muted">
-                {stage === "listening" ? "Listening. Tap the mic again when you're done." : stage === "transcribing" ? "Transcribing…" : "Working on it…"}
+                {stage === "listening"
+                  ? hearing
+                    ? "Hearing you…"
+                    : "Listening. Just talk, and pause when you're done."
+                  : stage === "transcribing"
+                    ? "Transcribing…"
+                    : "Working on it…"}
               </li>
             )}
           </ol>
           <div ref={bottom} />
 
-          {view?.pending && stage === "idle" && (
+          {view?.pending && !busy && (
             <section className="mt-5" aria-label="Waiting for your confirmation">
               <div className="receipt-edge" />
               <div className="bg-surface px-5 pb-5 pt-3 shadow-[0_8px_24px_-12px_rgb(20_33_61_/_0.35)]">
@@ -216,15 +313,14 @@ export default function Home() {
           >
             <button
               type="button"
-              onClick={toggleMic}
-              disabled={busy}
-              aria-pressed={stage === "listening"}
-              aria-label={stage === "listening" ? "Stop recording" : "Speak"}
-              className={`grid size-14 shrink-0 place-items-center rounded-full text-white transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cobalt disabled:opacity-40 ${
-                stage === "listening" ? "bg-amber motion-safe:animate-pulse" : "bg-cobalt hover:brightness-110"
+              onClick={live ? stopConversation : startConversation}
+              aria-pressed={live}
+              aria-label={live ? "Stop conversation" : "Start talking"}
+              className={`grid size-14 shrink-0 place-items-center rounded-full text-white transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cobalt ${
+                !live ? "bg-cobalt hover:brightness-110" : hearing ? "bg-amber motion-safe:animate-pulse" : "bg-mint"
               }`}
             >
-              {stage === "listening" ? (
+              {live ? (
                 <svg viewBox="0 0 24 24" className="size-5" fill="currentColor" aria-hidden><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
               ) : (
                 <svg viewBox="0 0 24 24" className="size-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
