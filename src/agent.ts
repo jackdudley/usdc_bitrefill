@@ -51,6 +51,9 @@ export class Session {
   /** Plain-text conversation for the UI. */
   transcript: { role: "user" | "agent"; text: string }[] = [];
   lastSearch?: any;
+  /** Claude API spend so far (estimated from token usage). */
+  aiSpentUsd = 0;
+  aiBudgetUsd = Number(process.env.AI_BUDGET_USD) || 1;
 
   constructor(public budgetUsd = Number(process.env.SESSION_BUDGET_USD) || 15) {}
 
@@ -253,8 +256,22 @@ const TOOLS: Anthropic.Beta.BetaTool[] = [
   },
 ];
 
+// Token rails, enforced in code. The prompt keeps the agent on topic; these bound the cost
+// when it isn't.
+const MAX_INPUT_CHARS = 300; // spoken requests are short; longer is paste/abuse
+const MAX_STEPS = 6; // model calls per user turn (search, quote, purchase fit easily)
+const MAX_REPLY_TOKENS = 2048; // thinking + a one-or-two sentence reply
+// ponytail: Opus 5.5 list prices; fallback-model turns priced the same, close enough for a cap
+const costUsd = (u: Anthropic.Beta.BetaUsage) =>
+  ((u.input_tokens ?? 0) * 4 +
+    (u.cache_creation_input_tokens ?? 0) * 5 +
+    (u.cache_read_input_tokens ?? 0) * 0.2 +
+    (u.output_tokens ?? 0) * 20) /
+  1e6;
+
 const system = (s: Session) =>
-  `You are a voice assistant that buys gift cards with USDC. Replies are spoken aloud: short, plain sentences, no markdown, no long IDs or URLs unless asked.
+  `You are a voice assistant that buys gift cards with USDC. Replies are spoken aloud: one or two short, plain sentences, no markdown, no long IDs or URLs unless asked.
+Scope: only finding, quoting, buying and checking gift cards. For anything else (general questions, chit-chat, writing, code, other tasks) say in one sentence that you only handle gift cards, and call no tools.
 Flow: search_products, then get_quote. After a quote, say the product and total price and ask "Should I buy it?". Then stop and wait.
 Only call purchase after the user says yes to that quote. The tool enforces this; never claim a purchase happened unless purchase returned "paid".
 A quote can only be confirmed by the user's very next message. If they say anything else, it's dead: call get_quote again before asking for a yes.
@@ -267,27 +284,40 @@ const client = () => (_client ??= new Anthropic());
 
 /** One user turn: runs the tool loop until Claude replies with text. */
 export async function send(s: Session, text: string): Promise<string> {
+  text = text.trim();
   s.transcript.push({ role: "user", text });
-  const reply = await runTurn(s, text);
+  s.userSaid(text); // every message counts for the yes check, even ones refused below
+  const reply =
+    text.length > MAX_INPUT_CHARS
+      ? "That's too long for me. Tell me in a sentence which gift card you want."
+      : s.aiSpentUsd >= s.aiBudgetUsd
+        ? "This session has used up its AI allowance. Restart the app to keep going."
+        : await runTurn(s, text);
   s.transcript.push({ role: "agent", text: reply });
   return reply;
 }
 
 async function runTurn(s: Session, text: string): Promise<string> {
-  s.userSaid(text);
   s.messages.push({ role: "user", content: text });
 
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < MAX_STEPS; i++) {
     const res = await client().beta.messages.create({
       model: MODEL,
-      max_tokens: 16000,
+      max_tokens: MAX_REPLY_TOKENS,
       system: system(s),
       tools: TOOLS,
       messages: s.messages,
+      cache_control: { type: "ephemeral" }, // each turn resends the history; cached reads are ~10x cheaper
       output_config: { effort: "low" }, // chatty voice turns; raise if tool choices get sloppy
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
     });
+    s.aiSpentUsd += costUsd(res.usage);
+
+    if (res.stop_reason === "max_tokens") {
+      // truncated reply may hold a half-written tool call; keep it out of history
+      return "Sorry, I lost my train of thought. Could you say that again?";
+    }
     s.messages.push({ role: "assistant", content: res.content });
 
     if (res.stop_reason === "refusal") return "Sorry, I can't help with that.";

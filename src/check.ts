@@ -5,7 +5,7 @@
 import assert from "node:assert";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { payingFetch, nextStep, priceUsd, HARD_CAP_USDC } from "./bitrefill";
-import { Session, handlers, type Quote } from "./agent";
+import { Session, handlers, send, type Quote } from "./agent";
 
 const URL_ = "https://api.bitrefill.com/x402/gift-cards/search?q=starbucks&country=US";
 const PAYEE = "0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A";
@@ -113,6 +113,16 @@ const main = async () => {
   assert.match((await pay(t8b, "zzz")).refused, /unknown invoice/);
   assert.equal(t8.spentUsd + t8b.spentUsd, 0, "refusals must not touch the budget");
   console.log("8. purchase refuses unconfirmed / expired / over-budget / unknown, budget untouched  ✓");
+
+  // 9. token rails stop before any Claude call (no API key needed for these to pass)
+  const t9 = new Session(15);
+  quote(t9, "q", 5.04);
+  assert.match(await send(t9, "x".repeat(301)), /too long/);
+  assert.equal(t9.pending, undefined, "a refused message still kills the pending quote");
+  t9.aiSpentUsd = t9.aiBudgetUsd;
+  assert.match(await send(t9, "buy me a $5 starbucks card"), /AI allowance/);
+  assert.equal(t9.messages.length, 0, "nothing was sent to Claude");
+  console.log("9. long input and spent AI allowance refused before calling Claude  ✓");
 
   console.log("\nall checks passed -- no funds moved");
 };
