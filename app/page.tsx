@@ -5,6 +5,8 @@ import type { SessionView, Payment } from "../src/agent";
 type Stage = "idle" | "listening" | "transcribing" | "thinking";
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
+/** Empty WAV, played during a tap to unlock audio. */
+const SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
 export default function Home() {
   const [view, setView] = useState<SessionView | null>(null);
@@ -12,6 +14,7 @@ export default function Home() {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [voiceOff, setVoiceOff] = useState(false);
+  const [replyBlocked, setReplyBlocked] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
   const audio = useRef<HTMLAudioElement | null>(null);
   const bottom = useRef<HTMLDivElement | null>(null);
@@ -23,15 +26,24 @@ export default function Home() {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [view?.transcript.length, stage]);
 
+  // Browsers only allow sound right after a tap, but replies arrive seconds later. So during
+  // the tap we play a silent clip to unlock one audio element, then reuse it for every reply.
+  function unlockAudio() {
+    if (audio.current) return;
+    audio.current = new Audio(SILENT);
+    audio.current.play().catch(() => {});
+  }
+
   async function speak(text: string) {
-    audio.current?.pause();
+    const a = (audio.current ??= new Audio());
+    a.pause();
     try {
       const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
       if (!r.ok) throw new Error();
-      const a = new Audio(URL.createObjectURL(await r.blob()));
-      audio.current = a;
-      await a.play();
+      if (a.src.startsWith("blob:")) URL.revokeObjectURL(a.src);
+      a.src = URL.createObjectURL(await r.blob());
       setVoiceOff(false);
+      await a.play().then(() => setReplyBlocked(false), () => setReplyBlocked(true));
     } catch {
       setVoiceOff(true);
     }
@@ -40,6 +52,8 @@ export default function Home() {
   async function submit(text: string) {
     text = text.trim();
     if (!text || stage === "thinking") return;
+    unlockAudio();
+    setReplyBlocked(false);
     setError("");
     setDraft("");
     setStage("thinking");
@@ -60,6 +74,7 @@ export default function Home() {
   async function toggleMic() {
     if (stage === "listening") return recorder.current?.stop();
     if (stage !== "idle") return;
+    unlockAudio();
     audio.current?.pause();
     setError("");
     let stream: MediaStream;
@@ -183,6 +198,14 @@ export default function Home() {
 
           {error && <p role="alert" className="mt-4 text-sm text-amber">{error}</p>}
           {voiceOff && !error && <p className="mt-4 text-sm text-muted">Voice replies are unavailable, so replies show as text only.</p>}
+          {replyBlocked && (
+            <button
+              onClick={() => audio.current?.play().then(() => setReplyBlocked(false), () => {})}
+              className="mt-4 self-start rounded-lg px-4 py-2 text-sm font-medium text-cobalt ring-1 ring-line hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cobalt"
+            >
+              Play reply
+            </button>
+          )}
 
           <form
             className="sticky bottom-0 mt-4 flex items-center gap-3 bg-mist py-4"
