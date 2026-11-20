@@ -35,6 +35,7 @@ export default function Home() {
   const [wallet, setWallet] = useState<{ usdc: number; basescan: string } | null>(null);
   const [editingLimit, setEditingLimit] = useState(false);
   const [limitDraft, setLimitDraft] = useState("");
+  const [cardDraft, setCardDraft] = useState("");
 
   const refreshWallet = () =>
     fetch("/api/wallet")
@@ -51,7 +52,7 @@ export default function Home() {
 
   async function saveLimit(e: React.FormEvent) {
     e.preventDefault();
-    const r = await fetch("/api/budget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ budgetUsd: Number(limitDraft) }) });
+    const r = await fetch("/api/budget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ budgetUsd: Number(limitDraft), cardCapUsd: Number(cardDraft) }) });
     const j = await r.json();
     if (!r.ok) return setError(j.error ?? "Couldn't change the limit.");
     setError("");
@@ -249,35 +250,61 @@ export default function Home() {
               <div className="h-full rounded-full bg-mint transition-[width] duration-500" style={{ width: `${100 - spentPct}%` }} />
             </div>
             <div className="mt-1 flex items-baseline justify-between gap-2 text-xs text-muted">
-              <span>Max {usd(view.hardCapUsd)} per card</span>
-              {editingLimit ? (
-                <form onSubmit={saveLimit} className="flex items-center gap-1">
-                  <label className="sr-only" htmlFor="limit">Spend limit in dollars</label>$
-                  <input
-                    id="limit"
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    value={limitDraft}
-                    onChange={e => setLimitDraft(e.target.value)}
-                    autoFocus
-                    className="w-16 rounded bg-surface px-1.5 py-0.5 text-ink tabular-nums ring-1 ring-line focus:outline-none focus:ring-2 focus:ring-cobalt"
-                  />
-                  <button type="submit" className="font-medium text-cobalt focus-visible:outline-2 focus-visible:outline-cobalt">Save</button>
-                </form>
-              ) : (
+              <span>Max {usd(view.cardCapUsd)} per card</span>
+              {!editingLimit && (
                 <button
                   onClick={() => {
                     setLimitDraft(String(view.budgetUsd));
+                    setCardDraft(String(view.cardCapUsd));
                     setEditingLimit(true);
                   }}
                   className="underline underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-cobalt"
                 >
-                  Edit limit
+                  Edit limits
                 </button>
               )}
             </div>
+            {editingLimit && (
+              <form onSubmit={saveLimit} className="mt-2 flex flex-wrap items-end gap-3 text-xs text-muted">
+                <label className="flex flex-col gap-1">
+                  Session limit
+                  <span className="flex items-center gap-1 text-ink">
+                    $
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={limitDraft}
+                      onChange={e => setLimitDraft(e.target.value)}
+                      autoFocus
+                      className="w-16 rounded bg-surface px-1.5 py-1 tabular-nums ring-1 ring-line focus:outline-none focus:ring-2 focus:ring-cobalt"
+                    />
+                  </span>
+                </label>
+                <label className="flex flex-col gap-1">
+                  Per card, up to {usd(view.maxCardCapUsd)}
+                  <span className="flex items-center gap-1 text-ink">
+                    $
+                    <input
+                      type="number"
+                      min="0"
+                      max={view.maxCardCapUsd}
+                      step="0.01"
+                      value={cardDraft}
+                      onChange={e => setCardDraft(e.target.value)}
+                      className="w-16 rounded bg-surface px-1.5 py-1 tabular-nums ring-1 ring-line focus:outline-none focus:ring-2 focus:ring-cobalt"
+                    />
+                  </span>
+                </label>
+                <button type="submit" className="rounded px-2 py-1 font-medium text-cobalt ring-1 ring-line hover:bg-surface focus-visible:outline-2 focus-visible:outline-cobalt">
+                  Save
+                </button>
+                <button type="button" onClick={() => setEditingLimit(false)} className="py-1 hover:text-ink focus-visible:outline-2 focus-visible:outline-cobalt">
+                  Cancel
+                </button>
+              </form>
+            )}
             {wallet && (
               <p className="mt-2 text-xs text-muted">
                 Wallet{" "}

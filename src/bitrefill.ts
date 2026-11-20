@@ -24,7 +24,7 @@ const API = "https://api.bitrefill.com";
 const USDC_ON_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
 /** No single payment above this, whatever the API or the agent asks for. */
-export const HARD_CAP_USDC = 10;
+export const HARD_CAP_USDC = 15; // the UI's per-card limit can be set anywhere up to this, never above
 /** Default cap: covers the gated-route fees with headroom, nothing more. */
 const MICRO_FEE_CAP_USDC = 0.05;
 

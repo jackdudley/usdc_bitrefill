@@ -7,7 +7,8 @@
  * - purchase only pays an invoice the *user* confirmed: get_quote marks it pending, and
  *   only if the very next user message is a plain "yes" does it become confirmed.
  *   Anything else clears it. One yes pays once.
- * - every payment must fit the session's remaining budget and HARD_CAP_USDC.
+ * - every payment must fit the session's remaining budget and the per-card limit, which the
+ *   human sets in the UI up to HARD_CAP_USDC (the x402 client also refuses anything above that).
  * - every payment is logged (product, amount, tx hash, Basescan link) to the session and logs/.
  */
 import Anthropic from "@anthropic-ai/sdk";
@@ -64,11 +65,30 @@ export class Session {
     return Math.max(0, this.budgetUsd - this.spentUsd);
   }
 
+  /** Max price for a single card, set by the human in the UI, never above HARD_CAP_USDC. */
+  cardCapUsd = 10;
+
   /** Spend limit set by the human in the UI. The agent has no tool to change it. */
   setBudget(usd: number) {
     if (!Number.isFinite(usd) || usd < 0 || usd > MAX_BUDGET_USD)
       throw new Error(`Set a limit between $0 and $${MAX_BUDGET_USD}.`);
     this.budgetUsd = Math.round(usd * 100) / 100;
+  }
+
+  /** Per-card limit set by the human in the UI. The agent has no tool to change it. */
+  setCardCap(usd: number) {
+    if (!Number.isFinite(usd) || usd < 0 || usd > HARD_CAP_USDC)
+      throw new Error(`Set a per-card max between $0 and $${HARD_CAP_USDC}.`);
+    this.cardCapUsd = Math.round(usd * 100) / 100;
+  }
+
+  /** Most a single purchase may cost right now. */
+  get maxPriceUsd() {
+    return Math.min(this.remainingUsd, this.cardCapUsd);
+  }
+
+  get limitText() {
+    return `$${this.remainingUsd.toFixed(2)} left this session, $${this.cardCapUsd} max per card`;
   }
 
   /** Called with every user message before the model sees it. */
@@ -84,7 +104,8 @@ export class Session {
       budgetUsd: this.budgetUsd,
       spentUsd: this.spentUsd,
       remainingUsd: this.remainingUsd,
-      hardCapUsd: HARD_CAP_USDC,
+      cardCapUsd: this.cardCapUsd,
+      maxCardCapUsd: HARD_CAP_USDC,
       dryRun: !!process.env.DRY_RUN,
       pending: q ? { product: q.product, value: q.value, currency: q.currency, priceUsd: q.priceUsd } : null,
       payments: this.payments,
@@ -129,8 +150,7 @@ export const handlers: Record<string, Handler> = {
     const pkg = (d.packages ?? []).find((p: any) => p.package_value === String(value));
     if (!pkg) return { refused: `no ${value} package`, available: (d.packages ?? []).map((p: any) => p.package_value) };
     // ponytail: package_value approximates price (5 -> $5.04); the exact check is after create
-    if (Number(pkg.package_value) > Math.min(s.remainingUsd, HARD_CAP_USDC))
-      return { refused: `over budget: $${s.remainingUsd.toFixed(2)} left, hard cap $${HARD_CAP_USDC}` };
+    if (Number(pkg.package_value) > s.maxPriceUsd) return { refused: `over limit: ${s.limitText}` };
 
     const created = await call(
       nextStep(d, {
@@ -142,8 +162,7 @@ export const handlers: Record<string, Handler> = {
     const inv = created.json;
     const price = priceUsd(inv);
     if (!inv.invoice_id || !Number.isFinite(price)) throw new Error("bad invoice from Bitrefill");
-    if (price > Math.min(s.remainingUsd, HARD_CAP_USDC))
-      return { refused: `price $${price} over budget: $${s.remainingUsd.toFixed(2)} left, hard cap $${HARD_CAP_USDC}` };
+    if (price > s.maxPriceUsd) return { refused: `price $${price} over limit: ${s.limitText}` };
 
     s.quotes.set(inv.invoice_id, {
       invoiceId: inv.invoice_id,
@@ -169,8 +188,7 @@ export const handlers: Record<string, Handler> = {
     if (!q) return { refused: "unknown invoice; get a quote first" };
     if (s.confirmed !== invoice_id) return { refused: "user has not confirmed this quote; state product and price and ask" };
     if (Date.now() > q.expiresAt) return { refused: "quote expired; get a new one" };
-    if (q.priceUsd > Math.min(s.remainingUsd, HARD_CAP_USDC))
-      return { refused: `over budget: $${s.remainingUsd.toFixed(2)} left` };
+    if (q.priceUsd > s.maxPriceUsd) return { refused: `over limit: ${s.limitText}` };
     // read the chain, not our own bookkeeping: the wallet must actually hold the USDC
     const walletUsd = await usdcBalance();
     if (q.priceUsd > walletUsd) return { refused: `wallet holds only ${walletUsd.toFixed(2)} USDC on Base` };
@@ -236,7 +254,7 @@ export const handlers: Record<string, Handler> = {
       wallet_usdc_on_base: Number((await usdcBalance()).toFixed(4)),
       session_limit_usd: s.budgetUsd,
       session_remaining_usd: Number(s.remainingUsd.toFixed(2)),
-      per_card_cap_usd: HARD_CAP_USDC,
+      per_card_max_usd: s.cardCapUsd,
     };
   },
 
@@ -397,7 +415,7 @@ A quote can only be confirmed by the user's very next message. If they say anyth
 If a request is over budget or a value doesn't exist, say so and offer the closest option.
 After delivery, read back the redemption code or say the link is ready.
 Gifts: if the user wants the card sent to someone, include the email address in the quote question ("Should I buy it and email it to alex@example.com?"). After purchase returns paid, call send_gift with that address and their note, then confirm it was sent. Spoken addresses like "alex at gmail dot com" mean alex@gmail.com.
-Session budget: $${s.budgetUsd}; per-purchase hard cap: $${HARD_CAP_USDC}.
+Spending limits (set by the user in the app; you can't change them): session limit $${s.budgetUsd}, max $${s.cardCapUsd} per card. If they want more, tell them to raise it with Edit limits.
 Contacts (name: email): ${loadContacts().map(c => `${c.name}: ${c.email}`).join("; ") || "none yet"}. When the user names a contact ("send Alex a card"), use that email; if the name isn't a contact, ask for the address or suggest adding them under Contacts.`;
 
 let _client: Anthropic | undefined;

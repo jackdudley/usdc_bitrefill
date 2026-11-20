@@ -112,7 +112,7 @@ const main = async () => {
   const t8b = new Session(5);
   quote(t8b, "c", 5.04);
   t8b.userSaid("yes");
-  assert.match((await pay(t8b, "c")).refused, /over budget/);
+  assert.match((await pay(t8b, "c")).refused, /over limit/);
   assert.match((await pay(t8b, "zzz")).refused, /unknown invoice/);
   assert.equal(t8.spentUsd + t8b.spentUsd, 0, "refusals must not touch the budget");
   console.log("8. purchase refuses unconfirmed / expired / over-budget / unknown, budget untouched  ✓");
@@ -161,10 +161,16 @@ const main = async () => {
   quote(t12, "s", 5.04);
   t12.userSaid("yes");
   t12.setBudget(4);
-  assert.match((await pay(t12, "s")).refused, /over budget/);
+  assert.match((await pay(t12, "s")).refused, /over limit/);
   t12.spentUsd = 6;
   assert.equal(t12.remainingUsd, 0, "remaining never goes negative");
-  console.log("12. UI spend limit validated; lowering it blocks a confirmed purchase  ✓");
+  const t12b = new Session(15);
+  for (const bad of [-1, NaN, HARD_CAP_USDC + 0.01]) assert.throws(() => t12b.setCardCap(bad), /per-card max/);
+  t12b.setCardCap(5);
+  quote(t12b, "c", 5.04);
+  t12b.userSaid("yes");
+  assert.match((await pay(t12b, "c")).refused, /max per card/);
+  console.log("12. UI spend limit and per-card max validated; lowering either blocks a confirmed purchase  ✓");
 
   console.log("\nall checks passed -- no funds moved");
 };

@@ -19,7 +19,7 @@ A real $5 Starbucks gift card bought by this code on Base mainnet: [payment on B
 | Track objective | Here |
 |---|---|
 | Agents that pay for APIs per request (x402) | Every Bitrefill call (search, product details, quote, order status) is paid with an x402 USDC micro-payment, $0.001 to $0.002 each. The page lists them with Basescan links. |
-| Spending controls and guardrails | Per-card cap, human-set session limit, on-chain balance check, per-call fee cap, Claude spend cap. See [Safety limits](#safety-limits). |
+| Spending controls and guardrails | Human-set session limit and per-card max under a hard ceiling, on-chain balance check, per-call fee cap, Claude spend cap. See [Safety limits](#safety-limits). |
 | Human approval for transactions | Every purchase needs a spoken or clicked "yes" to the exact quoted price, checked in code. |
 | Allowlists | One API host (api.bitrefill.com), one network (Base), and gift emails only to addresses you said or saved as contacts. |
 | LLMs that read and act on the blockchain safely | The agent reads its wallet's live USDC balance (`check_funds`, and before every payment) and executes payments on Base, inside the limits above. |
@@ -77,7 +77,7 @@ sequenceDiagram
   P->>A: transcript
   A->>B: search_products (pays $0.002)
   A->>B: get_quote: product details ($0.001), create invoice ($0.002)
-  C-->>C: package exists? price within limit and $10 cap?
+  C-->>C: package exists? price within session limit and per-card max?
   A->>P: "5.03 USDC. Buy it and email it to Sam?"
   P->>U: speaks it, shows price slip from server state
   U->>P: "Yes"
@@ -103,9 +103,9 @@ All enforced in code. `npm run check` tests them without moving funds.
 | Limit | Default | How it's enforced |
 |---|---|---|
 | Human confirmation | Every purchase | `get_quote` marks the invoice pending. Only if your very next message is a plain affirmative ("yes", "yes please", "go ahead") does it become confirmed. "Yes but make it $10", a late yes or "I pre-approve" don't count. One yes pays once. |
-| Per-card cap | $10 | Refused before signing by the x402 client's spend control. No code path can raise it. |
+| Per-card max | $10, editable up to $15 | You set it with **Edit limits**; the agent has no tool to change it. Above it sits a $15 hard ceiling in code, also enforced by the x402 client's spend control before anything is signed. |
 | Exact-price payment | Invoice price | The pay call's x402 cap equals the quoted price, so a 402 asking for more is refused before signing. |
-| Session spend limit | $15 | Set by you with **Edit limit** ($0 to $100). The agent has no tool to change it. Budget is reserved before paying, so a failed payment can't be retried past it. |
+| Session spend limit | $15 | Set by you with **Edit limits** ($0 to $100). The agent has no tool to change it. Budget is reserved before paying, so a failed payment can't be retried past it. |
 | Wallet balance | On-chain | `purchase` reads the wallet's USDC on Base and refuses if it can't cover the price. |
 | Per-request fee cap | $0.05 | Every other x402 call is capped far above Bitrefill's $0.001 to $0.002 fees and far below anything harmful. |
 | Host and network allowlist | api.bitrefill.com, Base | Off-host URLs (including from Bitrefill's `next_step`) are refused; the x402 client only registers Base (`eip155:8453`). |
