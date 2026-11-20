@@ -9,7 +9,7 @@
  * package doesn't exist, or the price is over HARD_CAP_USDC or the wallet balance.
  */
 import { setTimeout as sleep } from "node:timers/promises";
-import { call, nextStep, priceUsd, usdcBalance, address, HARD_CAP_USDC } from "./bitrefill.js";
+import { call, nextStep, priceUsd, usdcBalance, address, HARD_CAP_USDC } from "./bitrefill";
 
 const args = process.argv.slice(2).filter(a => !a.startsWith("--"));
 const [term = "starbucks", wantValue = "5", country = "US"] = args;

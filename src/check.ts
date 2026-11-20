@@ -4,8 +4,8 @@
  *  usage: npm run check */
 import assert from "node:assert";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { payingFetch, nextStep, priceUsd, HARD_CAP_USDC } from "./bitrefill.js";
-import { Session, handlers, type Quote } from "./agent.js";
+import { payingFetch, nextStep, priceUsd, HARD_CAP_USDC } from "./bitrefill";
+import { Session, handlers, type Quote } from "./agent";
 
 const URL_ = "https://api.bitrefill.com/x402/gift-cards/search?q=starbucks&country=US";
 const PAYEE = "0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A";
@@ -82,9 +82,12 @@ const main = async () => {
   };
   const t7 = new Session(15);
   quote(t7, "inv1", 5.04);
-  t7.userSaid("Yes.");
-  assert.equal(t7.confirmed, "inv1");
-  for (const said of ["yes but make it $10", "no", "what about amazon?"]) {
+  for (const said of ["Yes.", "Yes, please.", "yeah go ahead", "OK, buy it!"]) {
+    quote(t7, "inv1", 5.04);
+    t7.userSaid(said);
+    assert.equal(t7.confirmed, "inv1", `"${said}" should confirm`);
+  }
+  for (const said of ["yes but make it $10", "no", "what about amazon?", "yes, send it to alex@x.com", "not yet"]) {
     quote(t7, "inv1", 5.04);
     t7.userSaid(said);
     assert.equal(t7.confirmed, undefined, `"${said}" must not confirm`);

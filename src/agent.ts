@@ -11,12 +11,12 @@
  * - every payment is logged (product, amount, tx hash, Basescan link) to the session and logs/.
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { call, nextStep, priceUsd, log, HARD_CAP_USDC } from "./bitrefill.js";
+import { call, nextStep, priceUsd, log, HARD_CAP_USDC } from "./bitrefill";
 
 const MODEL = "claude-opus-5-5";
 
-/** Plain affirmative only: "Yes.", "yeah", "go ahead please". "yes but make it $10" is not a yes. */
-const YES = /^\s*(yes|yeah|yep|yup|sure|confirm(ed)?|do it|go ahead|ok(ay)?)( please)?[\s.!,]*$/i;
+/** Only affirmative words: "Yes.", "Yes, please.", "yeah go ahead". "yes but make it $10" is not a yes. */
+const YES = /^\s*((yes|yeah|yep|yup|sure|confirm(ed)?|do it|go ahead|buy it|ok(ay)?|please)[\s.!,]*)+$/i;
 
 export type Quote = {
   invoiceId: string;
@@ -34,6 +34,9 @@ export type Payment = {
   invoiceId: string;
   txHash: string;
   basescan: string;
+  /** Bitrefill delivery_status, updated by purchase/check_order. */
+  status?: string;
+  redemption?: unknown[];
 };
 
 export class Session {
@@ -45,6 +48,8 @@ export class Session {
   confirmed?: string;
   payments: Payment[] = [];
   messages: Anthropic.Beta.BetaMessageParam[] = [];
+  /** Plain-text conversation for the UI. */
+  transcript: { role: "user" | "agent"; text: string }[] = [];
   lastSearch?: any;
 
   constructor(public budgetUsd = Number(process.env.SESSION_BUDGET_USD) || 15) {}
@@ -58,7 +63,24 @@ export class Session {
     this.confirmed = this.pending && YES.test(text) ? this.pending : undefined;
     this.pending = undefined;
   }
+
+  /** What the UI shows. The pending quote comes from code, not from the model's words. */
+  view() {
+    const q = this.pending ? this.quotes.get(this.pending) : undefined;
+    return {
+      budgetUsd: this.budgetUsd,
+      spentUsd: this.spentUsd,
+      remainingUsd: this.remainingUsd,
+      hardCapUsd: HARD_CAP_USDC,
+      dryRun: !!process.env.DRY_RUN,
+      pending: q ? { product: q.product, value: q.value, currency: q.currency, priceUsd: q.priceUsd } : null,
+      payments: this.payments,
+      transcript: this.transcript,
+    };
+  }
 }
+
+export type SessionView = ReturnType<Session["view"]>;
 
 /** Order status; includes redemption details once delivered. */
 const orderStatus = async (invoiceId: string) => {
@@ -147,6 +169,7 @@ export const handlers: Record<string, Handler> = {
         invoiceId: invoice_id,
         txHash: "DRY_RUN",
         basescan: "",
+        status: "dry_run",
       };
       s.payments.push(payment);
       log("payment", { ...payment, dryRun: true });
@@ -178,11 +201,16 @@ export const handlers: Record<string, Handler> = {
       await new Promise(r => setTimeout(r, 5000));
       st = await orderStatus(invoice_id);
     }
+    payment.status = st.delivery_status;
+    payment.redemption = st.redemption;
     return { paid: payment, ...st };
   },
 
-  async check_order(_s, { invoice_id }) {
-    return orderStatus(invoice_id);
+  async check_order(s, { invoice_id }) {
+    const st = await orderStatus(invoice_id);
+    const p = s.payments.find(p => p.invoiceId === invoice_id);
+    if (p) Object.assign(p, { status: st.delivery_status, redemption: st.redemption });
+    return st;
   },
 };
 
@@ -239,6 +267,13 @@ const client = () => (_client ??= new Anthropic());
 
 /** One user turn: runs the tool loop until Claude replies with text. */
 export async function send(s: Session, text: string): Promise<string> {
+  s.transcript.push({ role: "user", text });
+  const reply = await runTurn(s, text);
+  s.transcript.push({ role: "agent", text: reply });
+  return reply;
+}
+
+async function runTurn(s: Session, text: string): Promise<string> {
   s.userSaid(text);
   s.messages.push({ role: "user", content: text });
 

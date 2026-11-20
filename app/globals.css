@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@theme {
+  --color-mist: #f3f5f9;
+  --color-surface: #ffffff;
+  --color-ink: #14213d;
+  --color-muted: #5b6782;
+  --color-line: #dce2ec;
+  --color-cobalt: #2d6bff;
+  --color-mint: #0e8a5f;
+  --color-amber: #9a6512;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-mist: #0f1626;
+    --color-surface: #18223a;
+    --color-ink: #e8edf7;
+    --color-muted: #9aa6c0;
+    --color-line: #2a3654;
+    --color-cobalt: #6b95ff;
+    --color-mint: #3fc993;
+    --color-amber: #e0a84a;
+  }
+}
+
+body {
+  background: var(--color-mist);
+  color: var(--color-ink);
+}
+
+/* torn-receipt edge on the price slip */
+.receipt-edge {
+  background:
+    linear-gradient(-45deg, transparent 6px, var(--color-surface) 0) 0 0 / 12px 12px repeat-x,
+    linear-gradient(45deg, transparent 6px, var(--color-surface) 0) 0 0 / 12px 12px repeat-x;
+  height: 12px;
+}

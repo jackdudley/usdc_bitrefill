@@ -4,7 +4,7 @@
  *        DRY_RUN=1 npm run chat  (every check runs, stops before paying for the card)
  */
 import readline from "node:readline/promises";
-import { Session, send } from "./agent.js";
+import { Session, send } from "./agent";
 
 const s = new Session();
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
