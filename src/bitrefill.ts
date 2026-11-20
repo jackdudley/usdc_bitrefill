@@ -1,5 +1,5 @@
 /**
- * Bitrefill x402 purchase flow. Phase 1 spike + the engine Phase 2's agent tools call.
+ * Bitrefill x402 purchase.
  *
  * Path 2 (pay-per-call x402), not Path 1 (SIWX -> JWT): we hold the key server-side, so
  * there is no wallet approval prompt per micro-fee, which is the only reason the docs
@@ -8,26 +8,36 @@
  */
 import "dotenv/config";
 import { appendFileSync } from "node:fs";
-import { createWalletClient, http, publicActions, parseUnits, formatUnits } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { createWalletClient, http, publicActions, formatUnits } from "viem";
+import { privateKeyToAccount, type LocalAccount } from "viem/accounts";
 import { base } from "viem/chains";
-import { wrapFetchWithPayment, decodeXPaymentResponse } from "x402-fetch";
-import { v2Shim } from "./x402v2.js";
+import { wrapFetchWithPayment, x402Client, decodePaymentResponseHeader } from "@x402/fetch";
+import { ExactEvmScheme, toClientEvmSigner } from "@x402/evm";
 
 const API = "https://api.bitrefill.com";
 /** Refuse any single payment above this, whatever the API or the model asks for. */
-export const HARD_CAP_USDC = 15;
+export const HARD_CAP_USDC = 10;
 /** Cap for the $0.001-$0.002 gated-route micro-fees. */
 const MICRO_FEE_CAP_USDC = 0.05;
 
-const usdc = (n: number) => parseUnits(n.toFixed(6), 6);
+/**
+ * Official x402 v2 client, Base USDC only, with the library's own spend control as the cap:
+ * a 402 asking for more than `capUsdc` is refused before anything is signed.
+ * Exported so check.ts exercises the exact construction production uses.
+ */
+export const payingFetch = (account: LocalAccount, capUsdc: number, inner: typeof fetch = fetch) => {
+  if (capUsdc > HARD_CAP_USDC) throw new Error(`cap ${capUsdc} exceeds hard cap ${HARD_CAP_USDC} USDC`);
+  const client = new x402Client()
+    .register("eip155:8453", new ExactEvmScheme(toClientEvmSigner(account)))
+    .setSpendControls({ maxAmountPerPayment: `$${capUsdc}` });
+  return wrapFetchWithPayment(inner, client);
+};
 
-// Lazy: the pure helpers below stay importable (and testable) without a key in the env.
 let _wallet: ReturnType<typeof createWalletClient> extends never ? never : any;
 const signer = () => {
   if (_wallet) return _wallet;
-  const pk = process.env.PRIVATE_KEY;
-  if (!pk || !/^0x[0-9a-f]{64}$/i.test(pk)) throw new Error("PRIVATE_KEY missing or malformed (see .env.example)");
+  const pk = process.env.AGENT_PRIVATE_KEY;
+  if (!pk || !/^0x[0-9a-f]{64}$/i.test(pk)) throw new Error("AGENT_PRIVATE_KEY missing or malformed (see .env.example)");
   _wallet = createWalletClient({
     account: privateKeyToAccount(pk as `0x${string}`),
     chain: base,
@@ -37,7 +47,6 @@ const signer = () => {
 };
 export const address = (): `0x${string}` => signer().account.address;
 
-// ponytail: JSONL to a gitignored file. Good enough to debug a demo; no log lib.
 const LOG = `logs/${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
 /** Redemption codes are bearer money -> never hit the log file (they still print to stdout). */
 const redact = (v: unknown): unknown =>
@@ -58,20 +67,19 @@ export type Call = { url: string; method?: "GET" | "POST"; body?: unknown; capUs
 export type Result<T = any> = { json: T; txHash?: string };
 
 /**
- * One gated call. x402-fetch does request -> 402 -> sign payment -> retry.
+ * One gated call. @x402/fetch does request -> 402 -> sign payment -> retry.
  * `capUsdc` is the real safety gate: a 402 demanding more than the cap throws before
  * anything is signed, which is also the "402 amount must equal the invoice price" check.
  */
 export async function call<T = any>({ url, method = "GET", body, capUsdc }: Call): Promise<Result<T>> {
   const cap = capUsdc ?? MICRO_FEE_CAP_USDC;
-  if (cap > HARD_CAP_USDC) throw new Error(`cap ${cap} exceeds hard cap ${HARD_CAP_USDC} USDC`);
 
   const full = url.startsWith("http") ? url : API + url;
   if (new URL(full).hostname !== "api.bitrefill.com")
     throw new Error(`refusing off-host call: ${full}`); // next_step is untrusted input
 
   log("request", { url: full, method, body, capUsdc: cap });
-  const payFetch = wrapFetchWithPayment(v2Shim(fetch), signer(), usdc(cap));
+  const payFetch = payingFetch(signer().account, cap);
   const res = await payFetch(full, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
@@ -90,8 +98,8 @@ export async function call<T = any>({ url, method = "GET", body, capUsdc }: Call
     throw new Error(`${res.status} on ${full}: ${text.slice(0, 300)}`);
   }
 
-  const header = res.headers.get("x-payment-response");
-  const txHash = header ? decodeXPaymentResponse(header).transaction : undefined;
+  const header = res.headers.get("payment-response") ?? res.headers.get("x-payment-response");
+  const txHash = header ? decodePaymentResponseHeader(header).transaction : undefined;
   log("response", { status: res.status, txHash, json });
   if (txHash) console.log(`  $ paid (cap ${cap} USDC) -> https://basescan.org/tx/${txHash}`);
   return { json, txHash };
