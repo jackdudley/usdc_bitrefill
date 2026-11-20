@@ -4,3 +4,4 @@ logs/
 .next
 tsconfig.tsbuildinfo
 next-env.d.ts
+contacts.json

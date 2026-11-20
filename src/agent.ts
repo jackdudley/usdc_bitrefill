@@ -12,6 +12,7 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { call, nextStep, priceUsd, log, HARD_CAP_USDC } from "./bitrefill";
+import { EMAIL, loadContacts } from "./contacts";
 
 const MODEL = "claude-opus-5-5";
 
@@ -178,7 +179,11 @@ export const handlers: Record<string, Handler> = {
       };
       s.payments.push(payment);
       log("payment", { ...payment, dryRun: true });
-      return { dry_run: true, paid: payment, note: "DRY RUN: nothing was paid. Tell the user this was a test purchase." };
+      return {
+        dry_run: true,
+        paid: payment,
+        note: "DRY RUN: nothing was paid. If the user asked to send it to someone, still call send_gift now (it sends a marked test email). Tell the user this was a test.",
+      };
     }
 
     let txHash: string | undefined;
@@ -223,8 +228,8 @@ export const handlers: Record<string, Handler> = {
     if (!p) return { refused: "no purchase with that invoice; buy the card first" };
     const to = String(recipient_email).trim().toLowerCase();
     if (!EMAIL.test(to)) return { refused: "that isn't a valid email address" };
-    // the code is bearer money: only send it to an address the user actually said
-    if (!userGaveEmail(s, to)) return { refused: "the user never gave that address; ask them for it" };
+    // the code is bearer money: only send it to an address the user said or saved as a contact
+    if (!allowedRecipient(s, to)) return { refused: "that address isn't in the user's messages or contacts; ask them for it" };
 
     const test = p.status === "dry_run";
     if (!test && !p.redemption?.length) {
@@ -238,7 +243,8 @@ export const handlers: Record<string, Handler> = {
   },
 };
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const allowedRecipient = (s: Session, email: string) =>
+  userGaveEmail(s, email) || loadContacts().some(c => c.email === email);
 
 /** True if `email` is one of the words the user said or typed ("alex at gmail dot com" counts). */
 export const userGaveEmail = (s: Session, email: string) =>
@@ -359,7 +365,8 @@ A quote can only be confirmed by the user's very next message. If they say anyth
 If a request is over budget or a value doesn't exist, say so and offer the closest option.
 After delivery, read back the redemption code or say the link is ready.
 Gifts: if the user wants the card sent to someone, include the email address in the quote question ("Should I buy it and email it to alex@example.com?"). After purchase returns paid, call send_gift with that address and their note, then confirm it was sent. Spoken addresses like "alex at gmail dot com" mean alex@gmail.com.
-Session budget: $${s.budgetUsd}; per-purchase hard cap: $${HARD_CAP_USDC}.`;
+Session budget: $${s.budgetUsd}; per-purchase hard cap: $${HARD_CAP_USDC}.
+Contacts (name: email): ${loadContacts().map(c => `${c.name}: ${c.email}`).join("; ") || "none yet"}. When the user names a contact ("send Alex a card"), use that email; if the name isn't a contact, ask for the address or suggest adding them under Contacts.`;
 
 let _client: Anthropic | undefined;
 const client = () => (_client ??= new Anthropic());

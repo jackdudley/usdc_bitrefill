@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import type { SessionView, Payment } from "../src/agent";
+import type { Contact } from "../src/contacts";
 
 type Stage = "idle" | "listening" | "transcribing" | "thinking" | "speaking";
 
@@ -359,9 +360,81 @@ export default function Home() {
               ))}
             </ul>
           )}
+          <Contacts />
         </aside>
       </div>
     </div>
+  );
+}
+
+function Contacts() {
+  const [list, setList] = useState<Contact[]>([]);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    fetch("/api/contacts").then(r => r.json()).then(j => setList(j.contacts ?? [])).catch(() => {});
+  }, []);
+
+  async function save(method: "POST" | "DELETE", body: object) {
+    setErr("");
+    const r = await fetch("/api/contacts", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) return setErr(j.error ?? "Couldn't save the contact.");
+    setList(j.contacts);
+    if (method === "POST") {
+      setName("");
+      setEmail("");
+    }
+  }
+
+  const field =
+    "w-full rounded-lg bg-surface px-3 py-2 text-sm ring-1 ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-cobalt";
+  return (
+    <section className="mt-10" aria-labelledby="contacts-h">
+      <h2 id="contacts-h" className="font-semibold">Contacts</h2>
+      <p className="mt-1 text-sm text-muted">Say “send Alex a $5 Starbucks card” and it emails Alex here.</p>
+      {list.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {list.map(c => (
+            <li key={c.name} className="flex items-baseline justify-between gap-2 text-sm">
+              <span className="min-w-0">
+                <span className="font-medium">{c.name}</span>
+                <span className="block truncate text-muted">{c.email}</span>
+              </span>
+              <button
+                onClick={() => save("DELETE", { name: c.name })}
+                aria-label={`Remove ${c.name}`}
+                className="shrink-0 rounded px-1.5 text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-cobalt"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="mt-3 space-y-2"
+        onSubmit={e => {
+          e.preventDefault();
+          save("POST", { name, email });
+        }}
+      >
+        <label className="sr-only" htmlFor="c-name">Name</label>
+        <input id="c-name" value={name} onChange={e => setName(e.target.value)} placeholder="Name" className={field} />
+        <label className="sr-only" htmlFor="c-email">Email</label>
+        <input id="c-email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" className={field} />
+        <button
+          type="submit"
+          disabled={!name.trim() || !email.trim()}
+          className="w-full rounded-lg py-2 text-sm font-medium ring-1 ring-line hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cobalt disabled:opacity-40"
+        >
+          Add contact
+        </button>
+        {err && <p role="alert" className="text-sm text-amber">{err}</p>}
+      </form>
+    </section>
   );
 }
 

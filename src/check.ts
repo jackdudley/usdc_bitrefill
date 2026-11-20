@@ -5,11 +5,14 @@
 import assert from "node:assert";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { payingFetch, nextStep, priceUsd, HARD_CAP_USDC } from "./bitrefill";
-import { Session, handlers, send, userGaveEmail, type Quote } from "./agent";
+import { tmpdir } from "node:os";
+import { Session, handlers, send, userGaveEmail, allowedRecipient, type Quote } from "./agent";
+import { saveContact, removeContact, loadContacts } from "./contacts";
 
 const URL_ = "https://api.bitrefill.com/x402/gift-cards/search?q=starbucks&country=US";
 const PAYEE = "0x480CD46E6faDe651a0437DeaddA53D5c8e7D846A";
 const burner = privateKeyToAccount(generatePrivateKey()); // never funded, never used again
+process.env.CONTACTS_FILE = `${tmpdir()}/ubc402-contacts-check-${process.pid}.json`; // never touch the real contacts.json
 
 /** Real fetch for the 402; captures (and swallows) any request that carries a payment. */
 const spy = () => {
@@ -136,8 +139,21 @@ const main = async () => {
   const gift = (id: string, to: string) => handlers.send_gift(t10, { invoice_id: id, recipient_email: to, message: "" }) as Promise<any>;
   assert.match((await gift("nope", "alex@gmail.com")).refused, /buy the card first/);
   assert.match((await gift("p1", "not-an-email")).refused, /valid email/);
-  assert.match((await gift("p1", "attacker@evil.com")).refused, /never gave/);
+  assert.match((await gift("p1", "attacker@evil.com")).refused, /isn't in the user's messages or contacts/);
   console.log("10. gift email only to an address the user gave, only for a bought card  ✓");
+
+  // 11. contacts: saved contacts are allowed recipients; bad input rejected (temp file, not yours)
+  assert.throws(() => saveContact("", "a@b.co"), /name/);
+  assert.throws(() => saveContact("Alex", "alex at gmail"), /email/);
+  saveContact("Alex", " Alex@Example.com ");
+  saveContact("alex", "alex2@example.com"); // same name replaces
+  assert.deepEqual(loadContacts(), [{ name: "alex", email: "alex2@example.com" }]);
+  const t11 = new Session(15);
+  assert.ok(allowedRecipient(t11, "alex2@example.com"), "contact email is allowed");
+  assert.ok(!allowedRecipient(t11, "alex@example.com"), "replaced address no longer allowed");
+  removeContact("ALEX");
+  assert.ok(!allowedRecipient(t11, "alex2@example.com"), "removed contact no longer allowed");
+  console.log("11. contacts are allowed gift recipients; add/replace/remove validated  ✓");
 
   console.log("\nall checks passed -- no funds moved");
 };
